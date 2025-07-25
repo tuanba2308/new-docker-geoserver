@@ -93,24 +93,63 @@ jobs:
         
         echo "Downloading GeoServer from: $GEOSERVER_URL"
         
-        # Download GeoServer WAR
-        curl -L "$GEOSERVER_URL" -o geoserver.zip
+        # Create placeholder files required by Dockerfile
+        touch .placeholder
+        
+        # Download GeoServer WAR with better error handling
+        if ! curl -L -f --retry 3 --retry-delay 5 "$GEOSERVER_URL" -o geoserver.zip; then
+          echo "Failed to download GeoServer from: $GEOSERVER_URL"
+          exit 1
+        fi
+        
+        # Validate downloaded file
+        if [ ! -f "geoserver.zip" ] || [ ! -s "geoserver.zip" ]; then
+          echo "Downloaded file is missing or empty"
+          exit 1
+        fi
+        
+        # Check if file is a valid zip
+        if ! unzip -t geoserver.zip >/dev/null 2>&1; then
+          echo "Downloaded file is not a valid zip archive"
+          file geoserver.zip
+          ls -la geoserver.zip
+          exit 1
+        fi
+        
+        echo "Successfully downloaded and validated geoserver.zip"
         
         # Download plugins (monitor, control-flow)
         mkdir -p plugins
         if [[ "$VERSION" == *"x"* ]] || [[ "$VERSION" == "main" ]]; then
           # Nightly plugins
-          curl -L "${PLUGIN_BASE_URL}/geoserver-${VERSION}${PLUGIN_SUFFIX}-monitor-plugin.zip" -o plugins/monitor.zip || echo "Monitor plugin download failed"
-          curl -L "${PLUGIN_BASE_URL}/geoserver-${VERSION}${PLUGIN_SUFFIX}-control-flow-plugin.zip" -o plugins/control-flow.zip || echo "Control-flow plugin download failed"
+          curl -L -f --retry 3 --retry-delay 5 "${PLUGIN_BASE_URL}/geoserver-${VERSION}${PLUGIN_SUFFIX}-monitor-plugin.zip" -o plugins/monitor.zip || echo "Monitor plugin download failed"
+          curl -L -f --retry 3 --retry-delay 5 "${PLUGIN_BASE_URL}/geoserver-${VERSION}${PLUGIN_SUFFIX}-control-flow-plugin.zip" -o plugins/control-flow.zip || echo "Control-flow plugin download failed"
         else
           # Stable plugins
-          curl -L "${PLUGIN_BASE_URL}/geoserver-${VERSION}-monitor-plugin.zip/download" -o plugins/monitor.zip || echo "Monitor plugin download failed"
-          curl -L "${PLUGIN_BASE_URL}/geoserver-${VERSION}-control-flow-plugin.zip/download" -o plugins/control-flow.zip || echo "Control-flow plugin download failed"
+          curl -L -f --retry 3 --retry-delay 5 "${PLUGIN_BASE_URL}/geoserver-${VERSION}-monitor-plugin.zip/download" -o plugins/monitor.zip || echo "Monitor plugin download failed"
+          curl -L -f --retry 3 --retry-delay 5 "${PLUGIN_BASE_URL}/geoserver-${VERSION}-control-flow-plugin.zip/download" -o plugins/control-flow.zip || echo "Control-flow plugin download failed"
         fi
         
+        # Create plugin URLs for dynamic loading if needed
+        PLUGIN_URLS=""
+        if [ -f "plugins/monitor.zip" ] && [ -s "plugins/monitor.zip" ]; then
+          PLUGIN_URLS="$PLUGIN_URLS,file:///plugins/monitor.zip"
+        fi
+        if [ -f "plugins/control-flow.zip" ] && [ -s "plugins/control-flow.zip" ]; then
+          PLUGIN_URLS="$PLUGIN_URLS,file:///plugins/control-flow.zip"
+        fi
+        PLUGIN_URLS="${PLUGIN_URLS#,}"  # Remove leading comma
+        
+        echo "PLUGIN_URLS=$PLUGIN_URLS" >> $GITHUB_ENV
+        
         # List downloaded files for debugging
+        echo "=== Downloaded files ==="
         ls -la
+        echo "=== Plugin directory ==="
         ls -la plugins/ || true
+        echo "=== File types ==="
+        file geoserver.zip
+        file plugins/*.zip 2>/dev/null || true
 
     - name: Build Docker Image
       if: steps.prepare.outputs.skip == 'false'
@@ -123,6 +162,9 @@ jobs:
         cache-to: type=gha,mode=max
         build-args: |
           VERSION=${{ steps.prepare.outputs.version }}
+          GEOSERVER_WEBAPP_SRC=./geoserver.zip
+          PLUG_IN_PATHS=./plugins/
+          PLUG_IN_URLS=${{ env.PLUGIN_URLS }}
 
     - name: Test Docker Image
       if: steps.prepare.outputs.skip == 'false'
@@ -227,18 +269,63 @@ jobs:
           PLUGIN_BASE_URL="https://sourceforge.net/projects/geoserver/files/GeoServer/${VERSION}/extensions"
         fi
         
-        # Download GeoServer WAR
-        curl -L "$GEOSERVER_URL" -o geoserver.zip
+        echo "Downloading GeoServer from: $GEOSERVER_URL"
+        
+        # Create placeholder files required by Dockerfile
+        touch .placeholder
+        
+        # Download GeoServer WAR with better error handling
+        if ! curl -L -f --retry 3 --retry-delay 5 "$GEOSERVER_URL" -o geoserver.zip; then
+          echo "Failed to download GeoServer from: $GEOSERVER_URL"
+          exit 1
+        fi
+        
+        # Validate downloaded file
+        if [ ! -f "geoserver.zip" ] || [ ! -s "geoserver.zip" ]; then
+          echo "Downloaded file is missing or empty"
+          exit 1
+        fi
+        
+        # Check if file is a valid zip
+        if ! unzip -t geoserver.zip >/dev/null 2>&1; then
+          echo "Downloaded file is not a valid zip archive"
+          file geoserver.zip
+          ls -la geoserver.zip
+          exit 1
+        fi
+        
+        echo "Successfully downloaded and validated geoserver.zip"
         
         # Download plugins
         mkdir -p plugins
         if [[ "$VERSION" == *"x"* ]] || [[ "$VERSION" == "main" ]]; then
-          curl -L "${PLUGIN_BASE_URL}/geoserver-${VERSION}-SNAPSHOT-monitor-plugin.zip" -o plugins/monitor.zip || true
-          curl -L "${PLUGIN_BASE_URL}/geoserver-${VERSION}-SNAPSHOT-control-flow-plugin.zip" -o plugins/control-flow.zip || true
+          curl -L -f --retry 3 --retry-delay 5 "${PLUGIN_BASE_URL}/geoserver-${VERSION}-SNAPSHOT-monitor-plugin.zip" -o plugins/monitor.zip || echo "Monitor plugin download failed"
+          curl -L -f --retry 3 --retry-delay 5 "${PLUGIN_BASE_URL}/geoserver-${VERSION}-SNAPSHOT-control-flow-plugin.zip" -o plugins/control-flow.zip || echo "Control-flow plugin download failed"
         else
-          curl -L "${PLUGIN_BASE_URL}/geoserver-${VERSION}-monitor-plugin.zip/download" -o plugins/monitor.zip || true
-          curl -L "${PLUGIN_BASE_URL}/geoserver-${VERSION}-control-flow-plugin.zip/download" -o plugins/control-flow.zip || true
+          curl -L -f --retry 3 --retry-delay 5 "${PLUGIN_BASE_URL}/geoserver-${VERSION}-monitor-plugin.zip/download" -o plugins/monitor.zip || echo "Monitor plugin download failed"
+          curl -L -f --retry 3 --retry-delay 5 "${PLUGIN_BASE_URL}/geoserver-${VERSION}-control-flow-plugin.zip/download" -o plugins/control-flow.zip || echo "Control-flow plugin download failed"
         fi
+        
+        # Create plugin URLs for dynamic loading if needed
+        PLUGIN_URLS=""
+        if [ -f "plugins/monitor.zip" ] && [ -s "plugins/monitor.zip" ]; then
+          PLUGIN_URLS="$PLUGIN_URLS,file:///plugins/monitor.zip"
+        fi
+        if [ -f "plugins/control-flow.zip" ] && [ -s "plugins/control-flow.zip" ]; then
+          PLUGIN_URLS="$PLUGIN_URLS,file:///plugins/control-flow.zip"
+        fi
+        PLUGIN_URLS="${PLUGIN_URLS#,}"  # Remove leading comma
+        
+        echo "PLUGIN_URLS=$PLUGIN_URLS" >> $GITHUB_ENV
+        
+        # Debug information
+        echo "=== Downloaded files ==="
+        ls -la
+        echo "=== Plugin directory ==="
+        ls -la plugins/ || true
+        echo "=== File types ==="
+        file geoserver.zip
+        file plugins/*.zip 2>/dev/null || true
 
     - name: Build and Test
       if: steps.check-ignore.outputs.skip == 'false'
@@ -251,6 +338,9 @@ jobs:
         cache-to: type=gha,mode=max
         build-args: |
           VERSION=${{ matrix.version }}
+          GEOSERVER_WEBAPP_SRC=./geoserver.zip
+          PLUG_IN_PATHS=./plugins/
+          PLUG_IN_URLS=${{ env.PLUGIN_URLS }}
 
     - name: Test Docker Image
       if: steps.check-ignore.outputs.skip == 'false'
@@ -274,6 +364,9 @@ jobs:
         cache-from: type=gha
         build-args: |
           VERSION=${{ matrix.version }}
+          GEOSERVER_WEBAPP_SRC=./geoserver.zip
+          PLUG_IN_PATHS=./plugins/
+          PLUG_IN_URLS=${{ env.PLUGIN_URLS }}
 
   push-latest:
     needs: build-automated
@@ -298,4 +391,3 @@ jobs:
         docker tag ${{ env.IMAGE_NAME }}:$NEWEST_VERSION ${{ env.IMAGE_NAME }}:latest
         docker push ${{ env.IMAGE_NAME }}:latest
 
-        
