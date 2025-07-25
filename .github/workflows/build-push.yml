@@ -166,6 +166,12 @@ jobs:
           PLUG_IN_PATHS=./plugins/
           PLUG_IN_URLS=${{ env.PLUGIN_URLS }}
 
+    - name: Install Docker Compose
+      if: steps.prepare.outputs.skip == 'false'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y docker-compose
+
     - name: Test Docker Image
       if: steps.prepare.outputs.skip == 'false'
       run: |
@@ -341,6 +347,12 @@ jobs:
           GEOSERVER_WEBAPP_SRC=./geoserver.zip
           PLUG_IN_PATHS=./plugins/
           PLUG_IN_URLS=${{ env.PLUGIN_URLS }}
+
+    - name: Install Docker Compose
+      if: steps.check-ignore.outputs.skip == 'false'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y docker-compose
 
     - name: Test Docker Image
       if: steps.check-ignore.outputs.skip == 'false'
