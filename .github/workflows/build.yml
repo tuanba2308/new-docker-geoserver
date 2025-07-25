@@ -22,7 +22,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: lecongbang314/geoserver
+  IMAGE_NAME: enterlight/geoserver
   NIGHTLY_MASTER_VERSION: "main"
   NIGHTLY_STABLE_VERSION: "2.19.x"
   NIGHTLY_MAINT_VERSION: "2.18.x"
