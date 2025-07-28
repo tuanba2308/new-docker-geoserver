@@ -23,13 +23,13 @@ on:
 env:
   REGISTRY: docker.io
   IMAGE_NAME: enterlight/geoserver
-  MIDDLE_STABLE: "19"
+  MIDDLE_STABLE: "27"
   NIGHTLY_MASTER_VERSION: "main"
-  NIGHTLY_STABLE_VERSION: "2.19.x"
-  NIGHTLY_MAINT_VERSION: "2.18.x"
-  STABLE_VERSION: "2.19.2 2.19.1 2.19.0"
-  MAINT_VERSION: "2.18.1 2.18.0"
-  IGNORE_VERSIONS: "2.19.0 2.18.0"
+  NIGHTLY_STABLE_VERSION: "2.27.x"
+  NIGHTLY_MAINT_VERSION: "2.26.x"
+  STABLE_VERSION: "2.27.2 2.27.1 2.26.3"
+  MAINT_VERSION: "2.26.2 2.26.1 2.26.0"
+  IGNORE_VERSIONS: ""
 
 jobs:
   # Job for manual version input
@@ -244,13 +244,14 @@ jobs:
       matrix:
         version: 
           - main
-          - 2.19.x
-          - 2.18.x
-          - 2.19.2
-          - 2.19.1
-          - 2.19.0
-          - 2.18.1
-          - 2.18.0
+          - 2.27.x
+          - 2.26.x
+          - 2.27.2
+          - 2.27.1
+          - 2.26.3
+          - 2.26.2
+          - 2.26.1
+          - 2.26.0
       fail-fast: false
     
     steps:
