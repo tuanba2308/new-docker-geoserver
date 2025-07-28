@@ -1,0 +1,447 @@
+name: Build and Push GeoServer Docker Images
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  schedule:
+    # Run daily at 2 AM UTC for nightly builds
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'GeoServer version to build (e.g., 2.27.1)'
+        required: true
+        type: string
+      force_build:
+        description: 'Force build even if version is in ignore list'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: enterlight/geoserver
+  MIDDLE_STABLE: "19"
+  NIGHTLY_MASTER_VERSION: "main"
+  NIGHTLY_STABLE_VERSION: "2.19.x"
+  NIGHTLY_MAINT_VERSION: "2.18.x"
+  STABLE_VERSION: "2.19.2 2.19.1 2.19.0"
+  MAINT_VERSION: "2.18.1 2.18.0"
+  IGNORE_VERSIONS: "2.19.0 2.18.0"
+
+jobs:
+  # Job for manual version input
+  build-manual-version:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Validate and prepare version
+      id: prepare
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        FORCE_BUILD="${{ github.event.inputs.force_build }}"
+        
+        # Check if version should be ignored
+        SKIP=false
+        if [ "$FORCE_BUILD" != "true" ]; then
+          for IGNORE_VERSION in $IGNORE_VERSIONS; do
+            if [ "$IGNORE_VERSION" == "$VERSION" ]; then
+              SKIP=true
+              break
+            fi
+          done
+        fi
+        
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "skip=$SKIP" >> $GITHUB_OUTPUT
+        echo "Building version: $VERSION (Skip: $SKIP)"
+
+    - name: Calculate plugin versions
+      id: plugin-versions
+      run: |
+        # Calculate plugin versions like the fixed build script
+        MIDDLE_STABLE="${{ env.MIDDLE_STABLE }}"
+        NIGHTLY_MASTER_PLUG_IN_VERSION="2.$((MIDDLE_STABLE + 1))-SNAPSHOT"
+        NIGHTLY_STABLE_PLUG_IN_VERSION="2.${MIDDLE_STABLE}-SNAPSHOT"  
+        NIGHTLY_MAINT_PLUG_IN_VERSION="2.$((MIDDLE_STABLE - 1))-SNAPSHOT"
+        
+        echo "master_plugin_version=$NIGHTLY_MASTER_PLUG_IN_VERSION" >> $GITHUB_OUTPUT
+        echo "stable_plugin_version=$NIGHTLY_STABLE_PLUG_IN_VERSION" >> $GITHUB_OUTPUT
+        echo "maint_plugin_version=$NIGHTLY_MAINT_PLUG_IN_VERSION" >> $GITHUB_OUTPUT
+        
+        echo "Plugin versions calculated:"
+        echo "Master: $NIGHTLY_MASTER_PLUG_IN_VERSION"
+        echo "Stable: $NIGHTLY_STABLE_PLUG_IN_VERSION" 
+        echo "Maintenance: $NIGHTLY_MAINT_PLUG_IN_VERSION"
+
+    - name: Download GeoServer and prepare build context
+      if: steps.prepare.outputs.skip == 'false'
+      run: |
+        VERSION="${{ steps.prepare.outputs.version }}"
+        
+        # Determine plugin version based on nightly type
+        if [[ "$VERSION" == "${{ env.NIGHTLY_MASTER_VERSION }}" ]]; then
+          PLUGIN_VERSION="${{ steps.plugin-versions.outputs.master_plugin_version }}"
+        elif [[ "$VERSION" == "${{ env.NIGHTLY_STABLE_VERSION }}" ]]; then
+          PLUGIN_VERSION="${{ steps.plugin-versions.outputs.stable_plugin_version }}"
+        elif [[ "$VERSION" == "${{ env.NIGHTLY_MAINT_VERSION }}" ]]; then
+          PLUGIN_VERSION="${{ steps.plugin-versions.outputs.maint_plugin_version }}"
+        else
+          # Stable version - use the version itself
+          PLUGIN_VERSION="$VERSION"
+        fi
+        
+        echo "Using plugin version: $PLUGIN_VERSION for GeoServer version: $VERSION"
+        
+        # Determine if this is a nightly or stable version
+        if [[ "$VERSION" == *"x"* ]] || [[ "$VERSION" == "main" ]]; then
+          # Nightly version
+          echo "Building nightly version: $VERSION"
+          GEOSERVER_URL="https://build.geoserver.org/geoserver/${VERSION}/geoserver-${VERSION}-latest-war.zip"
+          PLUGIN_BASE_URL="https://build.geoserver.org/geoserver/${VERSION}/ext-latest"
+          # Use calculated plugin version for nightly builds
+          MONITOR_PLUGIN_URL="${PLUGIN_BASE_URL}/geoserver-${PLUGIN_VERSION}-monitor-plugin.zip"
+          CONTROL_FLOW_PLUGIN_URL="${PLUGIN_BASE_URL}/geoserver-${PLUGIN_VERSION}-control-flow-plugin.zip"
+        else
+          # Stable version
+          echo "Building stable version: $VERSION"
+          GEOSERVER_URL="https://sourceforge.net/projects/geoserver/files/GeoServer/${VERSION}/geoserver-${VERSION}-war.zip/download"
+          PLUGIN_BASE_URL="https://sourceforge.net/projects/geoserver/files/GeoServer/${VERSION}/extensions"
+          # Use version itself for stable builds
+          MONITOR_PLUGIN_URL="${PLUGIN_BASE_URL}/geoserver-${VERSION}-monitor-plugin.zip/download"
+          CONTROL_FLOW_PLUGIN_URL="${PLUGIN_BASE_URL}/geoserver-${VERSION}-control-flow-plugin.zip/download"
+        fi
+        
+        echo "Downloading GeoServer from: $GEOSERVER_URL"
+        echo "Monitor plugin URL: $MONITOR_PLUGIN_URL"
+        echo "Control-flow plugin URL: $CONTROL_FLOW_PLUGIN_URL"
+        
+        # Create placeholder files required by Dockerfile
+        touch .placeholder
+        
+        # Download GeoServer WAR with better error handling
+        if ! curl -L -f --retry 3 --retry-delay 5 "$GEOSERVER_URL" -o geoserver.zip; then
+          echo "Failed to download GeoServer from: $GEOSERVER_URL"
+          exit 1
+        fi
+        
+        # Validate downloaded file
+        if [ ! -f "geoserver.zip" ] || [ ! -s "geoserver.zip" ]; then
+          echo "Downloaded file is missing or empty"
+          exit 1
+        fi
+        
+        # Check if file is a valid zip
+        if ! unzip -t geoserver.zip >/dev/null 2>&1; then
+          echo "Downloaded file is not a valid zip archive"
+          file geoserver.zip
+          ls -la geoserver.zip
+          exit 1
+        fi
+        
+        echo "Successfully downloaded and validated geoserver.zip"
+        
+        # Download plugins with fixed URLs
+        mkdir -p plugins
+        if ! curl -L -f --retry 3 --retry-delay 5 "$MONITOR_PLUGIN_URL" -o plugins/monitor.zip; then
+          echo "Monitor plugin download failed from: $MONITOR_PLUGIN_URL"
+        fi
+        if ! curl -L -f --retry 3 --retry-delay 5 "$CONTROL_FLOW_PLUGIN_URL" -o plugins/control-flow.zip; then
+          echo "Control-flow plugin download failed from: $CONTROL_FLOW_PLUGIN_URL"
+        fi
+        
+        # List downloaded files for debugging
+        echo "=== Downloaded files ==="
+        ls -la
+        echo "=== Plugin directory ==="
+        ls -la plugins/ || true
+        echo "=== File types ==="
+        file geoserver.zip
+        file plugins/*.zip 2>/dev/null || true
+
+    - name: Build Docker Image
+      if: steps.prepare.outputs.skip == 'false'
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: false
+        tags: ${{ env.IMAGE_NAME }}:${{ steps.prepare.outputs.version }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        build-args: |
+          VERSION=${{ steps.prepare.outputs.version }}
+          GEOSERVER_WEBAPP_SRC=./geoserver.zip
+          PLUG_IN_PATHS=./plugins/
+
+    - name: Install Docker Compose
+      if: steps.prepare.outputs.skip == 'false'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y docker-compose
+
+    - name: Test Docker Image
+      if: steps.prepare.outputs.skip == 'false'
+      run: |
+        export VERSION="${{ steps.prepare.outputs.version }}"
+        export DOCKER_REPO="${{ env.IMAGE_NAME }}"
+        
+        echo "Testing image: ${DOCKER_REPO}:${VERSION}"
+        
+        # Run tests with timeout
+        timeout 10m docker-compose -f docker-compose.test.yml run --rm sut || {
+          echo "Test failed for version $VERSION"
+          exit 1
+        }
+
+    - name: Push Docker Image
+      if: steps.prepare.outputs.skip == 'false'
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: ${{ env.IMAGE_NAME }}:${{ steps.prepare.outputs.version }}
+        cache-from: type=gha
+        build-args: |
+          VERSION=${{ steps.prepare.outputs.version }}
+          GEOSERVER_WEBAPP_SRC=./geoserver.zip
+          PLUG_IN_PATHS=./plugins/
+
+    - name: Update latest tag if stable version
+      if: steps.prepare.outputs.skip == 'false'
+      run: |
+        VERSION="${{ steps.prepare.outputs.version }}"
+        
+        # Only update latest for stable versions (not nightlies)
+        if [[ "$VERSION" != *"x"* ]] && [[ "$VERSION" != "main" ]]; then
+          echo "Updating latest tag to $VERSION"
+          docker tag ${{ env.IMAGE_NAME }}:$VERSION ${{ env.IMAGE_NAME }}:latest
+          docker push ${{ env.IMAGE_NAME }}:latest
+        else
+          echo "Skipping latest tag update for nightly version: $VERSION"
+        fi
+
+  # Job for automated builds (existing versions)
+  build-automated:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        version: 
+          - main
+          - 2.19.x
+          - 2.18.x
+          - 2.19.2
+          - 2.19.1
+          - 2.19.0
+          - 2.18.1
+          - 2.18.0
+      fail-fast: false
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Docker Hub
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Check if version should be ignored
+      id: check-ignore
+      run: |
+        VERSION="${{ matrix.version }}"
+        SKIP=false
+        for IGNORE_VERSION in $IGNORE_VERSIONS; do
+          if [ "$IGNORE_VERSION" == "$VERSION" ]; then
+            SKIP=true
+            break
+          fi
+        done
+        echo "skip=$SKIP" >> $GITHUB_OUTPUT
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+    - name: Calculate plugin versions
+      id: plugin-versions
+      run: |
+        # Calculate plugin versions like the fixed build script
+        MIDDLE_STABLE="${{ env.MIDDLE_STABLE }}"
+        NIGHTLY_MASTER_PLUG_IN_VERSION="2.$((MIDDLE_STABLE + 1))-SNAPSHOT"
+        NIGHTLY_STABLE_PLUG_IN_VERSION="2.${MIDDLE_STABLE}-SNAPSHOT"  
+        NIGHTLY_MAINT_PLUG_IN_VERSION="2.$((MIDDLE_STABLE - 1))-SNAPSHOT"
+        
+        echo "master_plugin_version=$NIGHTLY_MASTER_PLUG_IN_VERSION" >> $GITHUB_OUTPUT
+        echo "stable_plugin_version=$NIGHTLY_STABLE_PLUG_IN_VERSION" >> $GITHUB_OUTPUT
+        echo "maint_plugin_version=$NIGHTLY_MAINT_PLUG_IN_VERSION" >> $GITHUB_OUTPUT
+
+    - name: Download GeoServer and Build
+      if: steps.check-ignore.outputs.skip == 'false'
+      run: |
+        VERSION="${{ matrix.version }}"
+        
+        # Determine plugin version based on nightly type
+        if [[ "$VERSION" == "${{ env.NIGHTLY_MASTER_VERSION }}" ]]; then
+          PLUGIN_VERSION="${{ steps.plugin-versions.outputs.master_plugin_version }}"
+        elif [[ "$VERSION" == "${{ env.NIGHTLY_STABLE_VERSION }}" ]]; then
+          PLUGIN_VERSION="${{ steps.plugin-versions.outputs.stable_plugin_version }}"
+        elif [[ "$VERSION" == "${{ env.NIGHTLY_MAINT_VERSION }}" ]]; then
+          PLUGIN_VERSION="${{ steps.plugin-versions.outputs.maint_plugin_version }}"
+        else
+          # Stable version - use the version itself
+          PLUGIN_VERSION="$VERSION"
+        fi
+        
+        echo "Using plugin version: $PLUGIN_VERSION for GeoServer version: $VERSION"
+        
+        # Determine if this is a nightly or stable version
+        if [[ "$VERSION" == *"x"* ]] || [[ "$VERSION" == "main" ]]; then
+          # Nightly version
+          echo "Building nightly version: $VERSION"
+          GEOSERVER_URL="https://build.geoserver.org/geoserver/${VERSION}/geoserver-${VERSION}-latest-war.zip"
+          PLUGIN_BASE_URL="https://build.geoserver.org/geoserver/${VERSION}/ext-latest"
+          # Use calculated plugin version for nightly builds
+          MONITOR_PLUGIN_URL="${PLUGIN_BASE_URL}/geoserver-${PLUGIN_VERSION}-monitor-plugin.zip"
+          CONTROL_FLOW_PLUGIN_URL="${PLUGIN_BASE_URL}/geoserver-${PLUGIN_VERSION}-control-flow-plugin.zip"
+        else
+          # Stable version
+          echo "Building stable version: $VERSION"
+          GEOSERVER_URL="https://sourceforge.net/projects/geoserver/files/GeoServer/${VERSION}/geoserver-${VERSION}-war.zip/download"
+          PLUGIN_BASE_URL="https://sourceforge.net/projects/geoserver/files/GeoServer/${VERSION}/extensions"
+          # Use version itself for stable builds
+          MONITOR_PLUGIN_URL="${PLUGIN_BASE_URL}/geoserver-${VERSION}-monitor-plugin.zip/download"
+          CONTROL_FLOW_PLUGIN_URL="${PLUGIN_BASE_URL}/geoserver-${VERSION}-control-flow-plugin.zip/download"
+        fi
+        
+        echo "Downloading GeoServer from: $GEOSERVER_URL"
+        
+        # Create placeholder files required by Dockerfile
+        touch .placeholder
+        
+        # Download GeoServer WAR with better error handling
+        if ! curl -L -f --retry 3 --retry-delay 5 "$GEOSERVER_URL" -o geoserver.zip; then
+          echo "Failed to download GeoServer from: $GEOSERVER_URL"
+          exit 1
+        fi
+        
+        # Validate downloaded file
+        if [ ! -f "geoserver.zip" ] || [ ! -s "geoserver.zip" ]; then
+          echo "Downloaded file is missing or empty"
+          exit 1
+        fi
+        
+        # Check if file is a valid zip
+        if ! unzip -t geoserver.zip >/dev/null 2>&1; then
+          echo "Downloaded file is not a valid zip archive"
+          file geoserver.zip
+          ls -la geoserver.zip
+          exit 1
+        fi
+        
+        echo "Successfully downloaded and validated geoserver.zip"
+        
+        # Download plugins with fixed URLs
+        mkdir -p plugins
+        if ! curl -L -f --retry 3 --retry-delay 5 "$MONITOR_PLUGIN_URL" -o plugins/monitor.zip; then
+          echo "Monitor plugin download failed from: $MONITOR_PLUGIN_URL"
+        fi
+        if ! curl -L -f --retry 3 --retry-delay 5 "$CONTROL_FLOW_PLUGIN_URL" -o plugins/control-flow.zip; then
+          echo "Control-flow plugin download failed from: $CONTROL_FLOW_PLUGIN_URL"
+        fi
+        
+        # Debug information
+        echo "=== Downloaded files ==="
+        ls -la
+        echo "=== Plugin directory ==="
+        ls -la plugins/ || true
+        echo "=== File types ==="
+        file geoserver.zip
+        file plugins/*.zip 2>/dev/null || true
+
+    - name: Build and Test
+      if: steps.check-ignore.outputs.skip == 'false'
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: false
+        tags: ${{ env.IMAGE_NAME }}:${{ matrix.version }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        build-args: |
+          VERSION=${{ matrix.version }}
+          GEOSERVER_WEBAPP_SRC=./geoserver.zip
+          PLUG_IN_PATHS=./plugins/
+
+    - name: Install Docker Compose
+      if: steps.check-ignore.outputs.skip == 'false'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y docker-compose
+
+    - name: Test Docker Image
+      if: steps.check-ignore.outputs.skip == 'false'
+      run: |
+        export VERSION="${{ matrix.version }}"
+        export DOCKER_REPO="${{ env.IMAGE_NAME }}"
+        
+        # Run tests with timeout (fixed the bug from original script)
+        timeout 10m docker-compose -f docker-compose.test.yml run --rm sut || {
+          echo "Test failed for version $VERSION"
+          exit 1
+        }
+
+    - name: Push Docker Image
+      if: steps.check-ignore.outputs.skip == 'false' && github.event_name != 'pull_request'
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: ${{ env.IMAGE_NAME }}:${{ matrix.version }}
+        cache-from: type=gha
+        build-args: |
+          VERSION=${{ matrix.version }}
+          GEOSERVER_WEBAPP_SRC=./geoserver.zip
+          PLUG_IN_PATHS=./plugins/
+
+  push-latest:
+    needs: build-automated
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' && github.event_name != 'workflow_dispatch'
+    
+    steps:
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Create and Push Latest Tag
+      run: |
+        # Get the newest stable version
+        NEWEST_VERSION=$(echo "$STABLE_VERSION" | cut -d' ' -f1)
+        
+        # Pull the newest version and tag as latest
+        docker pull ${{ env.IMAGE_NAME }}:$NEWEST_VERSION
+        docker tag ${{ env.IMAGE_NAME }}:$NEWEST_VERSION ${{ env.IMAGE_NAME }}:latest
+        docker push ${{ env.IMAGE_NAME }}:latest
