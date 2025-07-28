@@ -189,26 +189,6 @@ jobs:
           GEOSERVER_WEBAPP_SRC=./geoserver.zip
           PLUG_IN_PATHS=./plugins/
 
-    - name: Install Docker Compose
-      if: steps.prepare.outputs.skip == 'false'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y docker-compose
-
-    - name: Test Docker Image
-      if: steps.prepare.outputs.skip == 'false'
-      run: |
-        export VERSION="${{ steps.prepare.outputs.version }}"
-        export DOCKER_REPO="${{ env.IMAGE_NAME }}"
-        
-        echo "Testing image: ${DOCKER_REPO}:${VERSION}"
-        
-        # Run tests with timeout
-        timeout 10m docker-compose -f docker-compose.test.yml run --rm sut || {
-          echo "Test failed for version $VERSION"
-          exit 1
-        }
-
     - name: Push Docker Image
       if: steps.prepare.outputs.skip == 'false'
       uses: docker/build-push-action@v5
@@ -221,6 +201,34 @@ jobs:
           VERSION=${{ steps.prepare.outputs.version }}
           GEOSERVER_WEBAPP_SRC=./geoserver.zip
           PLUG_IN_PATHS=./plugins/
+
+    - name: Install Docker Compose
+      if: steps.prepare.outputs.skip == 'false'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y docker-compose
+
+    - name: Test Docker Image
+      if: steps.prepare.outputs.skip == 'false'
+      run: |
+        export VERSION="${{ steps.prepare.outputs.version }}"
+        
+        # For pull requests, use locally built image instead of pulling from registry
+        if [ "${{ github.event_name }}" == "pull_request" ]; then
+          export DOCKER_REPO="local/geoserver"
+          # Tag the local image for testing
+          docker tag "${{ env.IMAGE_NAME }}:${VERSION}" "local/geoserver:${VERSION}"
+        else
+          export DOCKER_REPO="${{ env.IMAGE_NAME }}"
+        fi
+        
+        echo "Testing image: ${DOCKER_REPO}:${VERSION}"
+        
+        # Run tests with timeout
+        timeout 10m docker-compose -f docker-compose.test.yml run --rm sut || {
+          echo "Test failed for version $VERSION"
+          exit 1
+        }
 
     - name: Update latest tag if stable version
       if: steps.prepare.outputs.skip == 'false'
@@ -379,7 +387,7 @@ jobs:
         file geoserver.zip
         file plugins/*.zip 2>/dev/null || true
 
-    - name: Build and Test
+    - name: Build Docker Image
       if: steps.check-ignore.outputs.skip == 'false'
       uses: docker/build-push-action@v5
       with:
@@ -388,6 +396,19 @@ jobs:
         tags: ${{ env.IMAGE_NAME }}:${{ matrix.version }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        build-args: |
+          VERSION=${{ matrix.version }}
+          GEOSERVER_WEBAPP_SRC=./geoserver.zip
+          PLUG_IN_PATHS=./plugins/
+
+    - name: Push Docker Image
+      if: steps.check-ignore.outputs.skip == 'false' && github.event_name != 'pull_request'
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: ${{ env.IMAGE_NAME }}:${{ matrix.version }}
+        cache-from: type=gha
         build-args: |
           VERSION=${{ matrix.version }}
           GEOSERVER_WEBAPP_SRC=./geoserver.zip
@@ -403,26 +424,23 @@ jobs:
       if: steps.check-ignore.outputs.skip == 'false'
       run: |
         export VERSION="${{ matrix.version }}"
-        export DOCKER_REPO="${{ env.IMAGE_NAME }}"
         
-        # Run tests with timeout (fixed the bug from original script)
+        # For pull requests, use locally built image instead of pulling from registry
+        if [ "${{ github.event_name }}" == "pull_request" ]; then
+          export DOCKER_REPO="local/geoserver"
+          # Tag the local image for testing
+          docker tag "${{ env.IMAGE_NAME }}:${VERSION}" "local/geoserver:${VERSION}"
+        else
+          export DOCKER_REPO="${{ env.IMAGE_NAME }}"
+        fi
+        
+        echo "Testing image: ${DOCKER_REPO}:${VERSION}"
+        
+        # Run tests with timeout
         timeout 10m docker-compose -f docker-compose.test.yml run --rm sut || {
           echo "Test failed for version $VERSION"
           exit 1
         }
-
-    - name: Push Docker Image
-      if: steps.check-ignore.outputs.skip == 'false' && github.event_name != 'pull_request'
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        push: true
-        tags: ${{ env.IMAGE_NAME }}:${{ matrix.version }}
-        cache-from: type=gha
-        build-args: |
-          VERSION=${{ matrix.version }}
-          GEOSERVER_WEBAPP_SRC=./geoserver.zip
-          PLUG_IN_PATHS=./plugins/
 
   push-latest:
     needs: build-automated
