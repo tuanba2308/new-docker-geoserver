@@ -1,5 +1,24 @@
 #!/bin/bash -x
 
+# Exit on any error
+set -e
+
+# Validate required environment variables
+if [ -z "$MIDDLE_STABLE" ]; then
+  echo "ERROR: MIDDLE_STABLE environment variable is not set"
+  exit 1
+fi
+
+if [ -z "$DOCKER_REPO" ]; then
+  echo "ERROR: DOCKER_REPO environment variable is not set"
+  exit 1
+fi
+
+if [ -z "$DOCKERFILE_PATH" ]; then
+  echo "ERROR: DOCKERFILE_PATH environment variable is not set"
+  exit 1
+fi
+
 PLUG_IN_LIST="monitor control-flow"
 NIGHTLY_MASTER_PLUG_IN_VERSION="2.$(expr $MIDDLE_STABLE + 1)-SNAPSHOT"
 NIGHTLY_STABLE_PLUG_IN_VERSION="2.$MIDDLE_STABLE-SNAPSHOT"
@@ -29,11 +48,13 @@ for NIGHTLY_VERSION in $NIGHTLY_MASTER_VERSION $NIGHTLY_STABLE_VERSION $NIGHTLY_
     echo $PLUG_IN_VERSION
     URL="https://build.geoserver.org/geoserver/$NIGHTLY_VERSION/ext-latest/geoserver-$PLUG_IN_VERSION-$PLUG_IN_NAME-plugin.zip"
     #wget $URL -O ./resources/geoserver-plugins/geoserver-$PLUG_IN_VERSION-$PLUG_IN_NAME-plugin.zip
-    curl -k -o ./resources/geoserver-plugins/geoserver-$PLUG_IN_VERSION-$PLUG_IN_NAME-plugin.zip $URL
+    if ! curl -k -o ./resources/geoserver-plugins/geoserver-$PLUG_IN_VERSION-$PLUG_IN_NAME-plugin.zip $URL; then
+      echo "ERROR: Failed to download plugin $PLUG_IN_NAME for version $PLUG_IN_VERSION"
+      exit 1
+    fi
     #echo "Plugin $PLUG_IN_NAME URL for version $PLUG_IN_VERSION: $URL"
     #PLUG_IN_URLS+=($URL)
   done
-  var=$(IFS=$'  '; echo "${PLUG_IN_URLS[*]}" )
   docker build \
     --build-arg GEOSERVER_WEBAPP_SRC="$NIGHTLY_URL" \
     --build-arg PLUG_IN_PATHS="./resources/geoserver-plugins" \
@@ -58,14 +79,15 @@ for VERSION in $STABLE_VERSION $MAINT_VERSION; do
   for PLUG_IN_NAME in $PLUG_IN_LIST; do
     echo $PLUG_IN_NAME
     echo $VERSION
-    mkdir -p ./resources/geoserver-plugins
     URL="https://sourceforge.net/projects/geoserver/files/GeoServer/$VERSION/extensions/geoserver-$VERSION-$PLUG_IN_NAME-plugin.zip/download"
-    #wget $URL -O ./resources/geoserver-plugins/geoserver-$PLUG_IN_VERSION-$PLUG_IN_NAME-plugin.zip
-    curl -k -o ./resources/geoserver-plugins/geoserver-$PLUG_IN_VERSION-$PLUG_IN_NAME-plugin.zip $URL
+    #wget $URL -O ./resources/geoserver-plugins/geoserver-$VERSION-$PLUG_IN_NAME-plugin.zip
+    if ! curl -k -o ./resources/geoserver-plugins/geoserver-$VERSION-$PLUG_IN_NAME-plugin.zip $URL; then
+      echo "ERROR: Failed to download plugin $PLUG_IN_NAME for version $VERSION"
+      exit 1
+    fi
     #echo "Plugin $PLUG_IN_NAME URL for version $PLUG_IN_VERSION: $URL"
     #PLUG_IN_URLS+=($URL)
   done
-  var=$(IFS=$'\ '; echo "${PLUG_IN_URLS[*]}" )
   docker build \
     --build-arg GEOSERVER_WEBAPP_SRC="$GEOSERVER_URL" \
     --build-arg PLUG_IN_PATHS="./resources/geoserver-plugins" \
